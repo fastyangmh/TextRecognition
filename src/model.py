@@ -5,7 +5,6 @@ from pytorch_lightning import LightningModule
 import timm
 from os.path import dirname, basename
 import torch
-from torchmetrics import Accuracy, ConfusionMatrix
 import torch.nn.functional as F
 import numpy as np
 from src.utils import CTCDecoder, load_yaml, load_checkpoint
@@ -87,6 +86,20 @@ def create_model(project_parameters):
 # class
 
 
+class Accuracy:
+    def __init__(self):
+        pass
+
+    def __call__(self, y_hat, y, target_lengths):
+        idx = 0
+        total = len(y_hat)
+        correct = 0
+        for pred, length in zip(y_hat, target_lengths):
+            if pred == y[idx:idx+length]:
+                correct += 1
+        return correct/total
+
+
 class Net(LightningModule):
     def __init__(self, project_parameters):
         super().__init__()
@@ -105,8 +118,6 @@ class Net(LightningModule):
         self.ctc_decoder = CTCDecoder(
             mode='greedy', blank=project_parameters.classes[' '])
         self.accuracy = Accuracy()
-        self.confusion_matrix = ConfusionMatrix(
-            num_classes=project_parameters.num_classes)
 
     def _get_feature_size(self):
         x = torch.rand(1, self.project_parameters.in_chans, 224, 224)
@@ -121,7 +132,7 @@ class Net(LightningModule):
         x = x.permute(2, 0, 1)  # (width, batch_size, channels*height)
         x, _ = self.lstm(x)
         x = self.classifier(x)
-        return F.log_softmax(x)
+        return F.log_softmax(x)  # (width, batch_size, channels*height)
 
     def forward(self, x):
         # (batch_size, channels, height, width)
@@ -131,6 +142,7 @@ class Net(LightningModule):
         x = x.permute(2, 0, 1)  # (width, batch_size, channels*height)
         x, _ = self.lstm(x)
         x = self.classifier(x)
+        # (width, batch_size, channels*height)
         return self.activation_function(x)
 
     def get_progress_bar_dict(self):
@@ -139,40 +151,25 @@ class Net(LightningModule):
         items.pop('loss', None)
         return items
 
-    def _parse_outputs(self, outputs, calculate_confusion_matrix):
+    def _parse_outputs(self, outputs):
         epoch_loss = []
         epoch_accuracy = []
-        if calculate_confusion_matrix:
-            y_true = []
-            y_pred = []
         for step in outputs:
             epoch_loss.append(step['loss'].item())
-            epoch_accuracy.append(step['accuracy'].item())
-            if calculate_confusion_matrix:
-                y_pred.append(step['y_hat'])
-                y_true.append(step['y'])
-        if calculate_confusion_matrix:
-            y_pred = torch.cat(y_pred, 0)
-            y_true = torch.cat(y_true, 0)
-            confmat = pd.DataFrame(self.confusion_matrix(y_pred, y_true).tolist(
-            ), columns=self.project_parameters.classes.keys(), index=self.project_parameters.classes.keys()).astype(int)
-            return epoch_loss, epoch_accuracy, confmat
-        else:
-            return epoch_loss, epoch_accuracy
+            epoch_accuracy.append(step['accuracy'])
+        return epoch_loss, epoch_accuracy
 
     def training_step(self, batch, batch_idx):
         x, y, target_lengths = batch
         y_hat = self.training_forward(x)  # log softmax
-        input_lengths = torch.LongTensor(
-            [y_hat.size(0)] * self.project_parameters.batch_size)
+        input_lengths = torch.LongTensor([y_hat.size(0)] * y_hat.size(1))
         loss = self.loss_function(y_hat, y, input_lengths, target_lengths)
-        train_step_accuracy = self.accuracy(
-            self.ctc_decoder(emission_log_prob=y_hat), y)
+        train_step_accuracy = self.accuracy(y_hat=self.ctc_decoder(
+            emission_log_prob=y_hat), y=y, target_lengths=target_lengths)
         return {'loss': loss, 'accuracy': train_step_accuracy}
 
     def training_epoch_end(self, outputs):
-        epoch_loss, epoch_accuracy = self._parse_outputs(
-            outputs=outputs, calculate_confusion_matrix=False)
+        epoch_loss, epoch_accuracy = self._parse_outputs(outputs=outputs)
         self.log('training loss', np.mean(epoch_loss),
                  on_epoch=True, prog_bar=True)
         self.log('training accuracy', np.mean(epoch_accuracy))
@@ -180,16 +177,14 @@ class Net(LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y, target_lengths = batch
         y_hat = self.training_forward(x)  # log softmax
-        input_lengths = torch.LongTensor(
-            [y_hat.size(0)] * self.project_parameters.batch_size)
+        input_lengths = torch.LongTensor([y_hat.size(0)] * y_hat.size(1))
         loss = self.loss_function(y_hat, y, input_lengths, target_lengths)
-        val_step_accuracy = self.accuracy(
-            self.ctc_decoder(emission_log_prob=y_hat), y)
+        val_step_accuracy = self.accuracy(y_hat=self.ctc_decoder(
+            emission_log_prob=y_hat), y=y, target_lengths=target_lengths)
         return {'loss': loss, 'accuracy': val_step_accuracy}
 
     def validation_epoch_end(self, outputs) -> None:
-        epoch_loss, epoch_accuracy = self._parse_outputs(
-            outputs=outputs, calculate_confusion_matrix=False)
+        epoch_loss, epoch_accuracy = self._parse_outputs(outputs=outputs)
         self.log('validation loss', np.mean(epoch_loss),
                  on_epoch=True, prog_bar=True)
         self.log('validation accuracy', np.mean(epoch_accuracy))
@@ -197,19 +192,16 @@ class Net(LightningModule):
     def test_step(self, batch, batch_idx):
         x, y, target_lengths = batch
         y_hat = self.training_forward(x)  # log softmax
-        input_lengths = torch.LongTensor(
-            [y_hat.size(0)] * self.project_parameters.batch_size)
+        input_lengths = torch.LongTensor([y_hat.size(0)] * y_hat.size(1))
         loss = self.loss_function(y_hat, y, input_lengths, target_lengths)
-        test_step_accuracy = self.accuracy(
-            self.ctc_decoder(emission_log_prob=y_hat), y)
-        return {'loss': loss, 'accuracy': test_step_accuracy, 'y_hat': F.softmax(y_hat, dim=-1), 'y': y}
+        test_step_accuracy = self.accuracy(y_hat=self.ctc_decoder(
+            emission_log_prob=y_hat), y=y, target_lengths=target_lengths)
+        return {'loss': loss, 'accuracy': test_step_accuracy}
 
     def test_epoch_end(self, outputs) -> None:
-        epoch_loss, epoch_accuracy, confmat = self._parse_outputs(
-            outputs=outputs, calculate_confusion_matrix=True)
+        epoch_loss, epoch_accuracy = self._parse_outputs(outputs=outputs)
         self.log('test loss', np.mean(epoch_loss))
         self.log('test accuracy', np.mean(epoch_accuracy))
-        print(confmat)
 
     def configure_optimizers(self):
         optimizer = _get_optimizer(model_parameters=self.parameters(
