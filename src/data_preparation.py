@@ -42,12 +42,13 @@ class MyDataset(Dataset):
     def __getitem__(self, index):
         filepath = self.samples[index]
         label = basename(filepath)[:-4].split('_')[-1]
+        target_length = len(label)
         label = self._pad_space(label=label)
         label = np.array([self.class_to_idx[v] for v in label])
         image = Image.open(filepath).convert('RGB')
         if self.transform is not None:
             image = self.transform(image)
-        return image, label
+        return image, label, target_length
 
 
 class CAPTCHA(Dataset):
@@ -64,7 +65,7 @@ class CAPTCHA(Dataset):
         samples = []
         labels = []
         for _ in range(num_files):
-            chars = random.sample(self.chars, self.max_character_length)
+            chars = random.choices(self.chars, k=self.max_character_length)
             samples.append(self.generator.generate_image(chars=chars))
             labels.append(chars)
         self.samples = samples
@@ -76,10 +77,11 @@ class CAPTCHA(Dataset):
     def __getitem__(self, index):
         image = self.samples[index]
         label = self.labels[index]
+        target_length = len(label)
         label = np.array([self.class_to_idx[v] for v in label])
         if self.transform is not None:
             image = self.transform(image)
-        return image, label
+        return image, label, target_length
 
 
 class DataModule(LightningDataModule):

@@ -1,4 +1,5 @@
 # import
+from timm import list_models
 import argparse
 import torch
 from os.path import abspath, join, isfile, realpath
@@ -42,6 +43,16 @@ class ProjectParameters:
         ), help='how many subprocesses to use for data loading.')
         self._parser.add_argument('--transform_config_path', type=self._str_to_str,
                                   default='config/transform.yaml', help='the transform config path.')
+
+        # model
+        self._parser.add_argument('--in_chans', type=int, default=3,
+                                  help='number of input channels / colors (default: 3).')
+        self._parser.add_argument('--backbone_model', type=str, required=True,
+                                  help='if you want to use a self-defined model, give the path of the self-defined model. otherwise, the provided backbone model is as a followed list. {}'.format(list_models()))
+        self._parser.add_argument('--checkpoint_path', type=str, default=None,
+                                  help='the path of the pre-trained model checkpoint.')
+        self._parser.add_argument('--optimizer_config_path', type=str,
+                                  default='config/optimizer.yaml', help='the optimizer config path.')
 
         # debug
         self._parser.add_argument(
@@ -110,10 +121,16 @@ class ProjectParameters:
             project_parameters.classes = {c: idx for idx, c in enumerate(
                 [' ']+sorted(project_parameters.classes))}
             project_parameters.num_classes = len(project_parameters.classes)
-        #project_parameters.use_balance = not project_parameters.no_balance and project_parameters.predefined_dataset is None
         if project_parameters.transform_config_path is not None:
             project_parameters.transform_config_path = abspath(
                 project_parameters.transform_config_path)
+
+        # model
+        project_parameters.optimizer_config_path = abspath(
+            project_parameters.optimizer_config_path)
+        if isfile(project_parameters.backbone_model):
+            project_parameters.backbone_model = abspath(
+                project_parameters.backbone_model)
 
         return project_parameters
 
