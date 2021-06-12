@@ -2,6 +2,8 @@
 from ruamel.yaml import safe_load
 from os.path import isfile
 from torchvision import transforms
+import numpy as np
+import torch
 
 # def
 
@@ -38,3 +40,60 @@ def get_transform_from_file(filepath):
     else:
         assert False, 'please check the transform config path: {}'.format(
             filepath)
+
+
+def load_checkpoint(model, num_classes, use_cuda, checkpoint_path):
+    map_location = torch.device(
+        device='cuda') if use_cuda else torch.device(device='cpu')
+    checkpoint = torch.load(f=checkpoint_path, map_location=map_location)
+    for k in checkpoint['state_dict'].keys():
+        if 'classifier.bias' in k or 'classifier.weight' in k:
+            if checkpoint['state_dict'][k].shape[0] != num_classes:
+                temp = checkpoint['state_dict'][k]
+                checkpoint['state_dict'][k] = torch.stack(
+                    [temp.mean(0)]*num_classes, 0)
+    if model.loss_function.weight is None:
+        # delete the loss_function.weight in the checkpoint, because this key does not work while loading the model.
+        if 'loss_function.weight' in checkpoint['state_dict']:
+            del checkpoint['state_dict']['loss_function.weight']
+    else:
+        # assign the new loss_function weight to the checkpoint
+        checkpoint['state_dict']['loss_function.weight'] = model.loss_function.weight
+    model.load_state_dict(checkpoint['state_dict'])
+    return model
+
+# class
+
+
+class CTCDecoder:
+    def __init__(self, mode, blank) -> None:
+        self.mode = mode
+        self.blank = blank
+
+    def _reconstruct(self, labels):
+        new_labels = []
+        # merge same labels
+        previous = None
+        for l in labels:
+            if l != previous:
+                new_labels.append(l)
+                previous = l
+        # delete blank
+        new_labels = [l for l in new_labels if l != self.blank]
+        return new_labels
+
+    def greedy_decode(self, emission_log_prob):
+        if type(emission_log_prob) != np.ndarray:
+            emission_log_prob = emission_log_prob.cpu().data.numpy()
+        _, batch_size, _ = emission_log_prob.shape
+        labels = []
+        for idx in range(batch_size):
+            labels.append(self._reconstruct(
+                np.argmax(emission_log_prob[:, idx, :], axis=-1)))
+        return np.array(labels)
+
+    def __call__(self, emission_log_prob):
+        if self.mode == 'greedy':
+            return self.greedy_decode(emission_log_prob=emission_log_prob)
+        else:
+            pass
