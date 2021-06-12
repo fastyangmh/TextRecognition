@@ -90,7 +90,7 @@ class CTCDecoder:
         for idx in range(batch_size):
             labels.append(self._reconstruct(
                 np.argmax(emission_log_prob[:, idx, :], axis=-1)))
-        return np.array(labels)
+        return labels   #list
 
     def __call__(self, emission_log_prob):
         if self.mode == 'greedy':

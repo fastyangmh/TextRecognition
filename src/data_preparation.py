@@ -9,7 +9,18 @@ import random
 from pytorch_lightning import LightningDataModule
 from src.utils import get_transform_from_file
 from torch.utils.data.dataset import random_split
-import numpy as np
+import torch
+
+# def
+
+
+def collate_fn(batch):
+    images, targets, target_lengths = zip(*batch)
+    images = torch.stack(images, 0)
+    targets = torch.cat(targets, 0)
+    target_lengths = torch.cat(target_lengths, 0)
+    return images, targets, target_lengths
+
 
 # class
 
@@ -29,26 +40,15 @@ class MyDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
-    def _pad_space(self, label):
-        diff = self.max_character_length-len(label)
-        if diff >= 0:
-            label += ' '*diff
-            return label
-        else:
-            msg = "The length of character: {}. It's over the max_character_length: {}.".format(
-                len(label), self.max_character_length)
-            raise RuntimeError(msg)
-
     def __getitem__(self, index):
         filepath = self.samples[index]
         label = basename(filepath)[:-4].split('_')[-1]
-        target_length = len(label)
-        label = self._pad_space(label=label)
-        label = np.array([self.class_to_idx[v] for v in label])
+        target_length = [len(label)]
+        label = [self.class_to_idx[v] for v in label]
         image = Image.open(filepath).convert('RGB')
         if self.transform is not None:
             image = self.transform(image)
-        return image, label, target_length
+        return image, torch.LongTensor(label), torch.LongTensor(target_length)
 
 
 class CAPTCHA(Dataset):
@@ -77,11 +77,11 @@ class CAPTCHA(Dataset):
     def __getitem__(self, index):
         image = self.samples[index]
         label = self.labels[index]
-        target_length = len(label)
-        label = np.array([self.class_to_idx[v] for v in label])
+        target_length = [len(label)]
+        label = [self.class_to_idx[v] for v in label]
         if self.transform is not None:
             image = self.transform(image)
-        return image, label, target_length
+        return image, torch.LongTensor(label), torch.LongTensor(target_length)
 
 
 class DataModule(LightningDataModule):
@@ -95,8 +95,8 @@ class DataModule(LightningDataModule):
         if self.project_parameters.predefined_dataset is None:
             self.dataset = {}
             for stage in ['train', 'val', 'test']:
-                self.dataset[stage] = MyDataset(root=join(project_parameters.data_path, stage), class_to_idx=project_parameters.classes,
-                                                max_character_length=project_parameters.max_character_length, transform=self.transform_dict[stage])
+                self.dataset[stage] = MyDataset(root=join(self.project_parameters.data_path, stage), class_to_idx=self.project_parameters.classes,
+                                                max_character_length=self.project_parameters.max_character_length, transform=self.transform_dict[stage])
                 # modify the maximum number of files
                 if self.project_parameters.max_files is not None:
                     lengths = (self.project_parameters.max_files, len(
@@ -124,13 +124,13 @@ class DataModule(LightningDataModule):
                             'val': val_set, 'test': test_set}
 
     def train_dataloader(self) -> DataLoader:
-        return DataLoader(dataset=self.dataset['train'], batch_size=self.project_parameters.batch_size, shuffle=True, pin_memory=self.project_parameters.use_cuda, num_workers=self.project_parameters.num_workers)
+        return DataLoader(dataset=self.dataset['train'], batch_size=self.project_parameters.batch_size, shuffle=True, pin_memory=self.project_parameters.use_cuda, num_workers=self.project_parameters.num_workers, collate_fn=collate_fn)
 
     def val_dataloader(self) -> DataLoader:
-        return DataLoader(dataset=self.dataset['val'], batch_size=self.project_parameters.batch_size, shuffle=False, pin_memory=self.project_parameters.use_cuda, num_workers=self.project_parameters.num_workers)
+        return DataLoader(dataset=self.dataset['val'], batch_size=self.project_parameters.batch_size, shuffle=False, pin_memory=self.project_parameters.use_cuda, num_workers=self.project_parameters.num_workers, collate_fn=collate_fn)
 
     def test_dataloader(self) -> DataLoader:
-        return DataLoader(dataset=self.dataset['test'], batch_size=self.project_parameters.batch_size, shuffle=False, pin_memory=self.project_parameters.use_cuda, num_workers=self.project_parameters.num_workers)
+        return DataLoader(dataset=self.dataset['test'], batch_size=self.project_parameters.batch_size, shuffle=False, pin_memory=self.project_parameters.use_cuda, num_workers=self.project_parameters.num_workers, collate_fn=collate_fn)
 
     def get_data_loaders(self):
         return {'train': self.train_dataloader(),
